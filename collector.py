@@ -10,7 +10,7 @@ from kiwipiepy import Kiwi
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-# [핵심] 한국 시간 설정
+# 한국 시간
 KST = timezone(timedelta(hours=9))
 
 config = configparser.ConfigParser()
@@ -24,16 +24,11 @@ except:
     API_HASH = '36f413dbaa03648679d3a3db53d0cf76'
 
 SESSION_NAME = 'streamlit_session'
-print("✅ [1] Awake(darthacking) 전용 수집기 가동 (KST)")
+print("✅ [1] Awake(darthacking) 전용 수집기 (디버깅 모드)")
 
-# [핵심] 오직 Awake 하나만!
 TARGET_CHANNELS = ['darthacking']
 
 ALERT_KEYWORDS = ['잠정실적', '영업이익', '매출액', '유상증자', '무상증자', '합병', '분할', '공개매수', '공급계약', '수주', '임상', '승인', '체결', '특허', '무상', '배당', '자사주', 'MOU', '협력', '속보', '특징주', '공시']
-
-# ... (노이즈 필터 등 기존과 동일, 생략 없이 전체 코드 필요하면 말씀하세요) ...
-# (코드가 너무 길어지니 핵심 부분만 보여드립니다. 위쪽 설정과 아래 로직은 동일합니다.)
-# 기존에 드린 코드와 로직은 같으나 TARGET_CHANNELS가 ['darthacking'] 인지 꼭 확인하세요!
 
 BLACKLIST_STOCKS = {'삼성증권', 'NH투자증권', '한국투자증권', '미래에셋증권', '키움증권', '신한투자증권', '신한지주', '하나증권', '하나금융지주', '메리츠증권', '메리츠금융지주', 'KB증권', 'KB금융', '대신증권', '한화투자증권', '유안타증권', '교보증권', '현대차증권', '하이투자증권', 'SK증권', '신영증권', 'IBK투자증권', '유진투자증권', '이베스트투자증권', 'LS증권', 'DB금융투자', '다올투자증권', '부국증권', '상상인증권', '케이프투자증권', 'BNK투자증권', 'DS투자증권', '한양증권', '흥국증권', '흥국화재', 'DB손해보험', 'DB', '상상인', '상상인저축은행', '한국금융지주', '우리금융지주', 'BNK금융지주', 'DGB금융지주', 'JB금융지주', '리서치', '금융투자', '투자증권', '스팩', '제호', '제호스팩', '기업인수목적'}
 
@@ -56,8 +51,9 @@ def load_alert_history():
 
 def get_krx_map():
     global PRICE_MAP
-    print("⏳ KRX 다운로드 중...")
+    print("⏳ KRX 다운로드 시도...")
     try:
+        # [수정] 에러가 나면 무슨 에러인지 출력하도록 변경
         df_krx = fdr.StockListing('KRX')
         for idx, row in df_krx.iterrows():
             name = row['Name']
@@ -71,8 +67,11 @@ def get_krx_map():
                     change = row[col]
                     break
             PRICE_MAP[name] = {'Code': row['Code'], 'Price': price, 'Change': change}
+        print(f"✅ KRX 다운로드 성공! ({len(PRICE_MAP)}개)")
         return set(PRICE_MAP.keys())
-    except: return set()
+    except Exception as e:
+        print(f"⚠️ [치명적 에러] KRX 다운로드 실패: {e}") # 에러 메시지를 보여줌
+        return set()
 
 def save_db(stock_map, kiwi):
     global PRICE_MAP, ALERT_HISTORY
@@ -120,15 +119,17 @@ async def collect():
     if not await client.is_user_authorized(): return
 
     stock_names = get_krx_map()
-    if not stock_names: return
+    if not stock_names: 
+        print("❌ 종목 리스트가 비어서 중단합니다.")
+        return
     
     load_alert_history()
     kiwi = Kiwi()
     stock_map = {} 
     
-    # 3일전 데이터 (UTC 기준)
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=3)
     
+    print(f"✅ [3] 감시 시작 (Awake / KST)")
     for i, ch in enumerate(TARGET_CHANNELS):
         try:
             ent = await client.get_entity(ch)
@@ -137,9 +138,7 @@ async def collect():
                     if m.date and m.date < cutoff_date: break 
                     if any(bad in m.text for bad in ABSOLUTE_IGNORE): continue
                     
-                    # [핵심] 메시지 시간 -> 한국 시간 변환
                     msg_time_kst = m.date.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
-
                     found_stocks_in_msg = []
                     for s in stock_names:
                         if s in m.text:
