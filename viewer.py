@@ -5,38 +5,31 @@ import altair as alt
 import os
 from datetime import datetime
 
-# 1. 페이지 설정 (가장 먼저!)
 st.set_page_config(page_title="HedgeFund Desk", layout="wide")
 
-# 2. 스타일
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] { font-size: 24px; font-weight: bold; }
-    .big-font { font-size: 20px !important; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("⚡ 기관용 마켓 스캐너 (DART & KST)")
 
 # ==========================================
-# [핵심] 검색창과 버튼을 '반복문 밖'에 배치 (에러 원천 차단)
+# [중요] 반복문 시작 '전'에 모든 입력창 생성 (에러 해결)
 # ==========================================
 with st.sidebar:
-    st.header("📥 데이터 추출")
+    st.header("📥 데이터")
     if os.path.exists("alert_history.csv"):
         try:
             with open("alert_history.csv", "rb") as f:
-                st.download_button("🚨 공시 파일 받기", f, "dart_history.csv", "text/csv")
+                st.download_button("🚨 공시 파일", f, "dart.csv", "text/csv")
         except: pass
-    
     st.markdown("---")
-    # 검색창을 여기에 한 번만 만듭니다.
-    search_keyword = st.text_input("🔍 종목 검색", key="sidebar_search_final")
+    # 검색창을 여기서 딱 한 번만 만듭니다!
+    search_keyword = st.text_input("🔍 종목 검색", key="unique_sidebar_search")
 
-# 탭도 밖에서 한 번만 만듭니다.
 tab1, tab2 = st.tabs(["📊 실시간 랭킹", "🚨 DART 공시 (Link)"])
-
-# 내용이 들어갈 빈 공간 만들기
 tab1_placeholder = tab1.empty()
 tab2_placeholder = tab2.empty()
 
@@ -64,28 +57,28 @@ def color_change(val):
     return f'color: {color}; font-weight: bold;'
 
 # ==========================================
-# [반복문 시작] 데이터만 계속 갈아끼움
+# [반복문] 여기서는 데이터만 화면에 뿌립니다 (입력창 생성 X)
 # ==========================================
 while True:
     df_rank, df_search, df_history = load_data()
     
-    # 1. 팝업 알림
+    # 팝업 알림
     if not df_history.empty:
         recent = df_history.head(3)
         for i, row in recent.iterrows():
             uid = f"{row['Stock']}_{row['Time']}"
             if uid not in st.session_state['viewed_alerts']:
-                st.toast(f"🚨 {row['Stock']} 공시 발생!", icon="📢")
+                st.toast(f"🚨 {row['Stock']} : {row['Keyword']}", icon="📢")
                 st.session_state['viewed_alerts'].add(uid)
 
-    # 2. 랭킹 탭 채우기
+    # 탭 1 (랭킹)
     with tab1_placeholder.container():
-        # 검색 결과 표시용
+        # 검색 결과
         if search_keyword and not df_search.empty:
             filtered = df_search[df_search['Stock'].str.contains(search_keyword, case=False)]
             if not filtered.empty:
-                row = filtered.iloc[0]
-                st.info(f"🔎 {row['Stock']} | {int(row['Price']):,}원 | {row['Theme']}")
+                r = filtered.iloc[0]
+                st.info(f"🔎 {r['Stock']} | {int(r['Price']):,}원 | {r['Theme']}")
 
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -103,27 +96,25 @@ while True:
                 display = df_rank[['Rank', 'Stock', 'Price', 'Change', 'Buzz', 'Theme']].style.map(color_change, subset=['Change']).format({'Price':"{:,.0f}", 'Change':"{:+.2f}%"})
                 st.dataframe(display, use_container_width=True, height=500, hide_index=True)
             else:
-                st.warning("데이터 수집 대기 중...")
+                st.warning("데이터 수집 중...")
 
-    # 3. DART 탭 채우기 (링크 기능 포함)
+    # 탭 2 (공시)
     with tab2_placeholder.container():
-        st.subheader("🚨 DART 실시간 공시")
+        st.subheader("🚨 DART 실시간 공시 (중복 제거됨)")
         if not df_history.empty:
-            # 링크 컬럼 설정
             st.data_editor(
-                df_history[['Time', 'Stock', 'Content', 'Link']],
+                df_history[['Time', 'Stock', 'Keyword', 'Content', 'Link']],
                 use_container_width=True, height=800, hide_index=True,
                 column_config={
                     "Time": st.column_config.Column("시간(KST)", width="medium"),
                     "Stock": st.column_config.Column("종목", width="small"),
-                    "Content": st.column_config.Column("공시 내용", width="large"),
-                    "Link": st.column_config.LinkColumn(
-                        "원문", display_text="🔗 바로가기", width="small"
-                    ),
+                    "Keyword": st.column_config.Column("재료", width="medium"),
+                    "Content": st.column_config.Column("요약", width="large"),
+                    "Link": st.column_config.LinkColumn("링크", display_text="🔗 이동", width="small"),
                 },
                 disabled=True
             )
         else:
-            st.info("아직 공시가 없습니다. (수집기는 작동 중)")
+            st.info("아직 공시가 없습니다.")
 
     time.sleep(1)
