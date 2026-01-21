@@ -10,6 +10,7 @@ from kiwipiepy import Kiwi
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+# 한국 시간
 KST = timezone(timedelta(hours=9))
 
 config = configparser.ConfigParser()
@@ -23,12 +24,13 @@ except:
     API_HASH = '36f413dbaa03648679d3a3db53d0cf76'
 
 SESSION_NAME = 'streamlit_session'
-print("✅ [1] 시스템 가동 (생중계 모드)")
+print("✅ [1] DART 공시 전용 수집기 가동 (링크 추출 모드)")
 
-# 선생님이 주신 아이디
-TARGET_CHANNELS = ['darthacking'] 
+# [핵심] DART 공식 채널 + KIND(거래소) 채널만 감시
+TARGET_CHANNELS = ['dart_notify', 'kind_disclosure']
 
-ALERT_KEYWORDS = ['잠정실적', '영업이익', '매출액', '유상증자', '무상증자', '합병', '분할', '공개매수', '공급계약', '수주', '임상', '승인', '체결', '특허', '무상', '배당', '자사주', 'MOU', '협력', '속보', '특징주', '공시']
+# 키워드 (이 단어가 없어도 공시 채널은 무조건 수집하지만, 중요도 체크용)
+ALERT_KEYWORDS = ['잠정실적', '영업이익', '매출액', '유상증자', '무상증자', '합병', '분할', '공개매수', '공급계약', '수주', '임상', '승인', '체결', '특허', '무상', '배당', '자사주']
 
 BLACKLIST_STOCKS = {'삼성증권', 'NH투자증권', '한국투자증권', '미래에셋증권', '키움증권', '신한투자증권', '신한지주', '하나증권', '하나금융지주', '메리츠증권', '메리츠금융지주', 'KB증권', 'KB금융', '대신증권', '한화투자증권', '유안타증권', '교보증권', '현대차증권', '하이투자증권', 'SK증권', '신영증권', 'IBK투자증권', '유진투자증권', '이베스트투자증권', 'LS증권', 'DB금융투자', '다올투자증권', '부국증권', '상상인증권', '케이프투자증권', 'BNK투자증권', 'DS투자증권', '한양증권', '흥국증권', '흥국화재', 'DB손해보험', 'DB', '상상인', '상상인저축은행', '한국금융지주', '우리금융지주', 'BNK금융지주', 'DGB금융지주', 'JB금융지주', '리서치', '금융투자', '투자증권', '스팩', '제호', '제호스팩', '기업인수목적'}
 
@@ -51,12 +53,14 @@ def load_alert_history():
 
 def get_krx_map():
     global PRICE_MAP
+    print("⏳ KRX 다운로드 중...")
     try:
         df_krx = fdr.StockListing('KRX')
         for idx, row in df_krx.iterrows():
             name = row['Name']
             if name in NOISE_STOCKS or name in BLACKLIST_STOCKS: continue
             if '스팩' in name or '리츠' in name or '우B' in name: continue
+            
             price = row['Close'] if 'Close' in row else 0
             change = 0.0
             for col in ['ChagesRatio', 'ChangesRatio', 'Change']:
@@ -64,17 +68,15 @@ def get_krx_map():
                     change = row[col]
                     break
             PRICE_MAP[name] = {'Code': row['Code'], 'Price': price, 'Change': change}
-        print(f"✅ KRX 다운로드 성공! ({len(PRICE_MAP)}개)")
         return set(PRICE_MAP.keys())
-    except Exception as e:
-        print(f"⚠️ KRX 다운로드 실패: {e}")
-        return set()
+    except: return set()
 
 def save_db(stock_map, kiwi):
     global PRICE_MAP, ALERT_HISTORY
     now_kst = datetime.now(KST).strftime('%H:%M:%S')
 
     if stock_map:
+        # 일반 뉴스 랭킹 저장 로직 (생략 없이 유지)
         sorted_stocks = sorted(stock_map.items(), key=lambda x: len(x[1]), reverse=True)
         final_rank = []
         final_search = []
@@ -94,6 +96,7 @@ def save_db(stock_map, kiwi):
                 reason = ", ".join([w for w, _ in Counter(valid_kws).most_common(3)])
                 if not reason: reason = "뉴스참조"
                 news_context = " || ".join(ctx[:5]) 
+                
                 data_row = {'Rank': rank, 'Stock': s, 'Buzz': len(ctx), 'Price': price, 'Change': rate, 'Trend': "-", 'Theme': reason, 'Context': news_context, 'Time': now_kst}
                 final_search.append(data_row)
                 if rank <= 30: final_rank.append(data_row)
@@ -104,11 +107,12 @@ def save_db(stock_map, kiwi):
         except: pass
 
     if ALERT_HISTORY:
+        # 공시 기록 저장
         df_hist = pd.DataFrame(ALERT_HISTORY).sort_values(by='Time', ascending=False).head(300)
         df_hist.to_csv("alert_history.csv", index=False, encoding='utf-8-sig')
 
 async def collect():
-    print("\n✅ 텔레그램 서버 접속 중...")
+    print("\n✅ 텔레그램 접속 중...")
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
     try: await client.connect()
     except: return
@@ -116,48 +120,54 @@ async def collect():
 
     stock_names = get_krx_map()
     if not stock_names: return
+    
     load_alert_history()
     kiwi = Kiwi()
     stock_map = {} 
     
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=3)
+    # 2일전 데이터부터
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=2)
     
     for i, ch in enumerate(TARGET_CHANNELS):
-        print(f"👉 [진입 시도] 채널: {ch}") # [수정] 진입 확인
+        print(f"👉 {ch} 채널 스캔 중...")
         try:
             ent = await client.get_entity(ch)
-            print(f"   🔓 {ch} 접속 성공! 메시지 읽는 중...") # [수정] 접속 성공 확인
-            
-            msg_count = 0
-            async for m in client.iter_messages(ent, limit=10): # [수정] 일단 10개만 테스트로 읽어봄
-                if m.text:
-                    msg_count += 1
-                    # [핵심] 봇이 읽고 있는 실제 메시지를 화면에 뿌림
-                    print(f"   📩 [읽음] {m.text[:30].replace('\n', ' ')}...") 
-
+            async for m in client.iter_messages(ent, limit=100):
+                if m.text and len(m.text) > 2:
+                    if m.date and m.date < cutoff_date: break 
+                    
                     msg_time_kst = m.date.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
+
+                    # [핵심] 메시지에서 링크(URL) 추출
+                    url_match = re.search(r'(https?://\S+)', m.text)
+                    extracted_link = url_match.group(0) if url_match else None
+
+                    # 종목 찾기
                     found_stocks_in_msg = []
                     for s in stock_names:
                         if s in m.text:
                             if '증권' in s or '스팩' in s or '리츠' in s: continue 
                             found_stocks_in_msg.append(s)
-                            if s not in stock_map: stock_map[s] = []
-                            if m.text not in stock_map[s]: stock_map[s].append(m.text)
                     
+                    # 공시 채널에 있는 내용은, 종목만 확인되면 무조건 저장 (키워드 없어도)
+                    # 왜냐? DART 채널에 올라온 건 다 공시니까요.
                     for s in found_stocks_in_msg:
-                        for keyword in ALERT_KEYWORDS:
-                            if keyword in m.text:
-                                is_exist = any(x['Stock'] == s and x['Keyword'] == keyword and x['Time'] == msg_time_kst for x in ALERT_HISTORY)
-                                if not is_exist:
-                                    new_alert = {'Time': msg_time_kst, 'Stock': s, 'Keyword': keyword, 'Content': m.text[:150]}
-                                    ALERT_HISTORY.append(new_alert)
-                                    print(f"🚨 [발견!] {s}:{keyword}")
-            
-            if msg_count == 0:
-                print(f"   ⚠️ 경고: {ch} 채널에 글이 하나도 없습니다! (혹시 아이디 틀림?)")
-                
-        except Exception as e: 
-            print(f"   ❌ 접속 실패 ({ch}): {e}") # [수정] 접속 실패 시 에러 출력
+                        # 중복 체크
+                        is_exist = any(x['Stock'] == s and x['Time'] == msg_time_kst for x in ALERT_HISTORY)
+                        
+                        if not is_exist:
+                            new_alert = {
+                                'Time': msg_time_kst, 
+                                'Stock': s, 
+                                'Keyword': '공시발생', # 기본값
+                                'Content': m.text[:100], # 내용 요약
+                                'Link': extracted_link if extracted_link else "없음" # [New] 링크 저장
+                            }
+                            ALERT_HISTORY.append(new_alert)
+                            print(f"🚨 [DART] {s} ({msg_time_kst})")
+                            
+        except Exception as e:
+            print(f"⚠️ {ch} 접속 실패: {e}")
             continue
         save_db(stock_map, kiwi)
 
@@ -168,8 +178,8 @@ async def main_loop():
     while True:
         try: await collect()
         except: pass
-        print("💤 30초 대기...")
-        await asyncio.sleep(30)
+        print("💤 60초 대기...")
+        await asyncio.sleep(60)
 
 if __name__ == '__main__':
     try: asyncio.run(main_loop())
