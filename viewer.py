@@ -5,8 +5,10 @@ import altair as alt
 import os
 from datetime import datetime
 
+# 1. 페이지 설정
 st.set_page_config(page_title="HedgeFund Desk", layout="wide")
 
+# 2. 스타일
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] { font-size: 24px; font-weight: bold; }
@@ -16,7 +18,7 @@ st.markdown("""
 st.title("⚡ 기관용 마켓 스캐너 (DART & KST)")
 
 # ==========================================
-# [중요] 반복문 시작 '전'에 모든 입력창 생성 (에러 해결)
+# [핵심] 검색창을 '반복문 밖'에 배치 (에러 절대 안 남)
 # ==========================================
 with st.sidebar:
     st.header("📥 데이터")
@@ -26,9 +28,10 @@ with st.sidebar:
                 st.download_button("🚨 공시 파일", f, "dart.csv", "text/csv")
         except: pass
     st.markdown("---")
-    # 검색창을 여기서 딱 한 번만 만듭니다!
-    search_keyword = st.text_input("🔍 종목 검색", key="unique_sidebar_search")
+    # [중요] 검색창은 여기서 딱 한 번만 만듭니다!
+    search_keyword = st.text_input("🔍 종목 검색", key="final_unique_search_key")
 
+# 탭 생성
 tab1, tab2 = st.tabs(["📊 실시간 랭킹", "🚨 DART 공시 (Link)"])
 tab1_placeholder = tab1.empty()
 tab2_placeholder = tab2.empty()
@@ -57,7 +60,7 @@ def color_change(val):
     return f'color: {color}; font-weight: bold;'
 
 # ==========================================
-# [반복문] 여기서는 데이터만 화면에 뿌립니다 (입력창 생성 X)
+# [반복문 시작] 데이터만 갱신 (화면 깜빡임 없음)
 # ==========================================
 while True:
     df_rank, df_search, df_history = load_data()
@@ -73,7 +76,6 @@ while True:
 
     # 탭 1 (랭킹)
     with tab1_placeholder.container():
-        # 검색 결과
         if search_keyword and not df_search.empty:
             filtered = df_search[df_search['Stock'].str.contains(search_keyword, case=False)]
             if not filtered.empty:
@@ -100,7 +102,7 @@ while True:
 
     # 탭 2 (공시)
     with tab2_placeholder.container():
-        st.subheader("🚨 DART 실시간 공시 (중복 제거됨)")
+        st.subheader("🚨 DART 실시간 공시 (중복 제거)")
         if not df_history.empty:
             st.data_editor(
                 df_history[['Time', 'Stock', 'Keyword', 'Content', 'Link']],
