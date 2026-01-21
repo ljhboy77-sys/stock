@@ -10,7 +10,11 @@ from kiwipiepy import Kiwi
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-# 설정 로드
+# ==========================================
+# [설정] 한국 시간(KST)
+# ==========================================
+KST = timezone(timedelta(hours=9))
+
 config = configparser.ConfigParser()
 config.read('config.ini', encoding='utf-8')
 
@@ -22,9 +26,19 @@ except:
     API_HASH = '36f413dbaa03648679d3a3db53d0cf76'
 
 SESSION_NAME = 'streamlit_session'
-print("✅ [1] 시스템 가동! (공시 누적 기록 모드)")
+print("✅ [1] 시스템 가동! (DART 링크 + KST + 랭킹 풀가동)")
+
+# ==========================================
+# [채널 분류]
+# 1. DART_CHANNELS: 공시 탭에 저장할 '진짜 공시' 채널
+# 2. TARGET_CHANNELS: 랭킹(언급량) 분석용 전체 채널
+# ==========================================
+DART_CHANNELS = ['rassiro_gongsi', 'dart_notify', 'kind_disclosure']
 
 TARGET_CHANNELS = [
+    # --- 공시 채널 (필수) ---
+    'rassiro_gongsi', 'dart_notify', 'kind_disclosure',
+    # --- 뉴스/정보 채널 (랭킹용) ---
     'economy_trending', 'fast_economy_news', 'rassiro_channel', 'sentinel_main', 'real_time_news',
     'korean_stock_news', 'stock_breaking_news', 'news_check', 'headline_news_kr', 'issue_link',
     'must_read_news', 'fast_stock_news', 'stock_market_check', 'breaking_news_korea', 'global_market_news',
@@ -37,7 +51,7 @@ TARGET_CHANNELS = [
     'samsungpop', 'miraeasset_research', 'koreainvestment', 'kb_sec_research', 'nh_invest_securities',
     'daishin_research', 'ebest_research', 'sk_securities', 'hi_investment', 'consensus_report',
     'comp_report', 'best_analyst', 'stock_report_korea', 'independent_research',
-    'dart_notify', 'rassiro_gongsi', 'irgoirgo', 'kind_disclosure', 'ipo_stock_market',
+    'irgoirgo', 'ipo_stock_market',
     'program_maemae', 'krx_market_alert', 'short_selling_watch', 'insider_trading_kr', 'bigfinance',
     'sejongdata2013', 'corevalue', 'YeouidoStory2', 'stock_le', 'man_vs_market', 'frankinvest',
     'contents_provider', 'street_research', 'bull_bear_monitor', 'pokerface_stock', 'survival_stock',
@@ -79,7 +93,6 @@ STOP_KEYWORDS = {
 ABSOLUTE_IGNORE = ['검색', '키워드', '순위', '랭킹', '인기글', '실시간', '링크', '모음', '정리', '광고', '무료', '입장', '클릭', 'Touch', '비트코인', '코인']
 
 PRICE_MAP = {}
-# [수정] 누적용 히스토리 리스트
 ALERT_HISTORY = []
 
 def load_alert_history():
@@ -97,7 +110,6 @@ def get_krx_map():
     print("⏳ [초기화] KRX 전 종목 가격표 다운로드 중...")
     try:
         df_krx = fdr.StockListing('KRX')
-        valid_count = 0
         for idx, row in df_krx.iterrows():
             name = row['Name']
             if name in NOISE_STOCKS or name in BLACKLIST_STOCKS: continue
@@ -110,7 +122,6 @@ def get_krx_map():
                     change = row[col]
                     break
             PRICE_MAP[name] = {'Code': row['Code'], 'Price': price, 'Change': change}
-            valid_count += 1
         return set(PRICE_MAP.keys())
     except:
         return set()
@@ -118,7 +129,10 @@ def get_krx_map():
 def save_db(stock_map, kiwi):
     global PRICE_MAP, ALERT_HISTORY
     
-    # 1. 랭킹 저장 (기존 로직)
+    # 한국 시간(KST) 문자열
+    now_kst = datetime.now(KST).strftime('%H:%M:%S')
+
+    # 1. 랭킹 저장 (모든 채널 데이터 활용)
     if stock_map:
         sorted_stocks = sorted(stock_map.items(), key=lambda x: len(x[1]), reverse=True)
         final_rank = []
@@ -139,7 +153,7 @@ def save_db(stock_map, kiwi):
                 reason = ", ".join([w for w, _ in Counter(valid_kws).most_common(3)])
                 if not reason: reason = "뉴스참조"
                 news_context = " || ".join(ctx[:5]) 
-                data_row = {'Rank': rank, 'Stock': s, 'Buzz': len(ctx), 'Price': price, 'Change': rate, 'Trend': "-", 'Theme': reason, 'Context': news_context, 'Time': datetime.now().strftime('%H:%M:%S')}
+                data_row = {'Rank': rank, 'Stock': s, 'Buzz': len(ctx), 'Price': price, 'Change': rate, 'Trend': "-", 'Theme': reason, 'Context': news_context, 'Time': now_kst}
                 final_search.append(data_row)
                 if rank <= 30: final_rank.append(data_row)
             except: continue
@@ -148,9 +162,8 @@ def save_db(stock_map, kiwi):
             pd.DataFrame(final_search).to_csv("search_db.csv", index=False, encoding='utf-8-sig')
         except: pass
 
-    # 2. [핵심] 공시 누적 저장 (append mode)
+    # 2. 공시 누적 저장
     if ALERT_HISTORY:
-        # 최신순 정렬 + 최대 300개만 유지 (용량 관리)
         df_hist = pd.DataFrame(ALERT_HISTORY).sort_values(by='Time', ascending=False).head(300)
         df_hist.to_csv("alert_history.csv", index=False, encoding='utf-8-sig')
 
@@ -164,10 +177,9 @@ async def collect():
     stock_names = get_krx_map()
     if not stock_names: return
     
-    # 시작할 때 기존 기록 불러오기
     load_alert_history()
 
-    print(f"✅ [3] 뉴스 & 공시 감시 시작...")
+    print(f"✅ [3] DART 공시 & 랭킹 감시 시작 (KST 적용)")
     kiwi = Kiwi()
     stock_map = {} 
     
@@ -181,6 +193,13 @@ async def collect():
                     if m.date and m.date < cutoff_date: break 
                     if any(bad in m.text for bad in ABSOLUTE_IGNORE): continue
                     
+                    # [중요] 모든 시간은 KST(한국시간)으로 변환
+                    msg_time_kst = m.date.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
+
+                    # [중요] 링크 추출 (http...)
+                    url_match = re.search(r'(https?://\S+)', m.text)
+                    extracted_link = url_match.group(0) if url_match else None
+
                     found_stocks_in_msg = []
                     for s in stock_names:
                         if s in m.text:
@@ -189,23 +208,28 @@ async def collect():
                             if s not in stock_map: stock_map[s] = []
                             if m.text not in stock_map[s]: stock_map[s].append(m.text)
                     
-                    # [핵심] 공시 누적 로직
-                    for s in found_stocks_in_msg:
-                        for keyword in ALERT_KEYWORDS:
-                            if keyword in m.text:
-                                # 날짜+시간까지 포함해서 중복 체크 (매우 중요)
-                                msg_time = m.date.strftime('%Y-%m-%d %H:%M:%S')
-                                is_exist = any(x['Stock'] == s and x['Keyword'] == keyword and x['Time'] == msg_time for x in ALERT_HISTORY)
-                                
-                                if not is_exist:
-                                    new_alert = {
-                                        'Time': msg_time,
-                                        'Stock': s,
-                                        'Keyword': keyword,
-                                        'Content': m.text[:150] # 내용 좀 더 길게
-                                    }
-                                    ALERT_HISTORY.append(new_alert)
-                                    print(f"🚨 [누적됨] {s} : {keyword}")
+                    # === [필터링 로직] ===
+                    # 1. 랭킹용 데이터: 모든 채널 다 씀 (이미 위에서 stock_map에 넣음)
+                    # 2. 공시 탭 데이터: 'DART_CHANNELS'에 있는 채널이거나, 링크가 있는 경우만 저장
+                    
+                    # 현재 채널이 공시 채널 목록에 있는지 확인
+                    is_disclosure_channel = any(dc in ch for dc in DART_CHANNELS)
+
+                    if is_disclosure_channel: 
+                        for s in found_stocks_in_msg:
+                            # 공시 채널은 키워드 없어도 종목만 있으면 무조건 저장
+                            is_exist = any(x['Stock'] == s and x['Time'] == msg_time_kst for x in ALERT_HISTORY)
+                            
+                            if not is_exist:
+                                new_alert = {
+                                    'Time': msg_time_kst, # 한국시간
+                                    'Stock': s,
+                                    'Keyword': '공시',
+                                    'Content': m.text[:100],
+                                    'Link': extracted_link if extracted_link else "없음" # 링크 저장
+                                }
+                                ALERT_HISTORY.append(new_alert)
+                                print(f"🚨 [DART] {s} ({msg_time_kst})")
         except: continue
         if (i+1) % 5 == 0: save_db(stock_map, kiwi)
 
