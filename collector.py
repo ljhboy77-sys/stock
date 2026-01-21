@@ -24,12 +24,11 @@ except:
     API_HASH = '36f413dbaa03648679d3a3db53d0cf76'
 
 SESSION_NAME = 'streamlit_session'
-print("✅ [1] 시스템 가동 (중복 제거 + DART 링크)")
+print("✅ [1] 수집기 가동 (KST + 링크 + 중복방지)")
 
 # 공시 채널
 DART_CHANNELS = ['rassiro_gongsi', 'dart_notify', 'kind_disclosure']
-
-# 전체 감시 채널
+# 전체 채널
 TARGET_CHANNELS = [
     'rassiro_gongsi', 'dart_notify', 'kind_disclosure',
     'economy_trending', 'fast_economy_news', 'rassiro_channel', 'stock_breaking_news',
@@ -101,7 +100,7 @@ def save_db(stock_map, kiwi):
         df_hist.to_csv("alert_history.csv", index=False, encoding='utf-8-sig')
 
 async def collect():
-    print("✅ 감시 중...")
+    print("✅ 감시 시작...")
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
     try: await client.connect()
     except: return
@@ -126,7 +125,6 @@ async def collect():
                     
                     msg_time_kst = m.date.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
                     
-                    # 링크 추출
                     url_match = re.search(r'(https?://\S+)', m.text)
                     link = url_match.group(0) if url_match else None
 
@@ -137,24 +135,23 @@ async def collect():
                             if s not in stock_map: stock_map[s] = []
                             if m.text not in stock_map[s]: stock_map[s].append(m.text)
 
-                    # [핵심 수정] DART 공시 저장 로직 (중복 제거)
+                    # [중복 방지 로직]
                     if any(dc in ch for dc in DART_CHANNELS):
                         for s in found_stocks_in_msg:
-                            # 1. 키워드 찾기
                             found_kws = [k for k in ALERT_KEYWORDS if k in m.text]
-                            if not found_kws: found_kws = ['공시'] # 키워드 없으면 기본값
+                            if not found_kws: found_kws = ['공시']
                             
-                            # 2. 키워드를 하나로 합침 (예: "매출액, 영업이익")
+                            # 키워드 합치기 (도배 방지)
                             combined_keyword = ", ".join(found_kws)
 
-                            # 3. 이미 저장된 '같은 시간 + 같은 종목'이 있는지 체크
+                            # 중복 체크
                             is_exist = any(x['Stock'] == s and x['Time'] == msg_time_kst for x in ALERT_HISTORY)
                             
                             if not is_exist:
                                 new_alert = {
                                     'Time': msg_time_kst, 
                                     'Stock': s, 
-                                    'Keyword': combined_keyword, # 합쳐진 키워드 저장
+                                    'Keyword': combined_keyword,
                                     'Content': m.text[:100],
                                     'Link': link if link else "없음"
                                 }
