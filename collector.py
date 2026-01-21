@@ -10,9 +10,7 @@ from kiwipiepy import Kiwi
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-# ==========================================
-# [설정] config.ini 로드
-# ==========================================
+# 설정 로드
 config = configparser.ConfigParser()
 config.read('config.ini', encoding='utf-8')
 
@@ -24,7 +22,7 @@ except:
     API_HASH = '36f413dbaa03648679d3a3db53d0cf76'
 
 SESSION_NAME = 'streamlit_session'
-print("✅ [1] 시스템 가동! (공시 무조건 알림 모드)")
+print("✅ [1] 시스템 가동! (공시 누적 기록 모드)")
 
 TARGET_CHANNELS = [
     'economy_trending', 'fast_economy_news', 'rassiro_channel', 'sentinel_main', 'real_time_news',
@@ -53,7 +51,6 @@ TARGET_CHANNELS = [
     'toss_cert', 'kakao_pay_sec', 'telegram_stock_bot', 'signal_report', 'dantanews2', 'today_summary', 'morning_brief'
 ]
 
-# [핵심] 공시 알림 키워드 (이게 포함되면 순위 상관없이 무조건 팝업)
 ALERT_KEYWORDS = ['잠정실적', '영업이익', '매출액', '유상증자', '무상증자', '합병', '분할', '공개매수', '공급계약', '수주', '임상', '승인', '체결', '특허', '무상', '배당', '자사주']
 
 BLACKLIST_STOCKS = {
@@ -82,7 +79,18 @@ STOP_KEYWORDS = {
 ABSOLUTE_IGNORE = ['검색', '키워드', '순위', '랭킹', '인기글', '실시간', '링크', '모음', '정리', '광고', '무료', '입장', '클릭', 'Touch', '비트코인', '코인']
 
 PRICE_MAP = {}
-ALERT_LOG = [] 
+# [수정] 누적용 히스토리 리스트
+ALERT_HISTORY = []
+
+def load_alert_history():
+    global ALERT_HISTORY
+    if os.path.exists("alert_history.csv"):
+        try:
+            df = pd.read_csv("alert_history.csv")
+            ALERT_HISTORY = df.to_dict('records')
+            print(f"📂 기존 공시 기록 {len(ALERT_HISTORY)}개 로드 완료")
+        except:
+            ALERT_HISTORY = []
 
 def get_krx_map():
     global PRICE_MAP
@@ -103,58 +111,48 @@ def get_krx_map():
                     break
             PRICE_MAP[name] = {'Code': row['Code'], 'Price': price, 'Change': change}
             valid_count += 1
-        print(f"✅ 가격표 다운로드 완료! ({valid_count}개 종목 탑재)")
         return set(PRICE_MAP.keys())
     except:
         return set()
 
 def save_db(stock_map, kiwi):
-    global PRICE_MAP, ALERT_LOG
-    if not stock_map: return
-
-    sorted_stocks = sorted(stock_map.items(), key=lambda x: len(x[1]), reverse=True)
-    final_rank = []
-    final_search = []
-
-    for rank, (s, ctx) in enumerate(sorted_stocks, 1):
-        try:
-            info = PRICE_MAP.get(s)
-            price = info['Price'] if info else 0
-            rate = info['Change'] if info else 0.0
-            
-            blob = " ".join(ctx)
-            kws = [t.form for t in kiwi.tokenize(blob[:1000]) if t.tag.startswith('NN') or (t.tag=='SL' and len(t.form)>2)]
-            valid_kws = []
-            for w in kws:
-                if len(w) < 2: continue
-                if w in STOP_KEYWORDS or w in ABSOLUTE_IGNORE or w in BLACKLIST_STOCKS: continue
-                if re.match(r'^[a-zA-Z]+$', w) and w.upper() in [x.upper() for x in STOP_KEYWORDS]: continue
-                valid_kws.append(w)
-            
-            reason = ", ".join([w for w, _ in Counter(valid_kws).most_common(3)])
-            if not reason: reason = "뉴스참조"
-            news_context = " || ".join(ctx[:5]) 
-
-            data_row = {
-                'Rank': rank, 'Stock': s, 'Buzz': len(ctx), 'Price': price, 'Change': rate,
-                'Trend': "-", 'Theme': reason, 'Context': news_context,
-                'Time': datetime.now().strftime('%H:%M:%S')
-            }
-            final_search.append(data_row)
-            if rank <= 30: final_rank.append(data_row)
-        except: continue
+    global PRICE_MAP, ALERT_HISTORY
     
-    try:
-        pd.DataFrame(final_rank).to_csv("market_data.csv", index=False, encoding='utf-8-sig')
-        pd.DataFrame(final_search).to_csv("search_db.csv", index=False, encoding='utf-8-sig')
-        
-        # [핵심] 순위권 밖이라도 ALERT_LOG에 있으면 무조건 저장
-        if ALERT_LOG:
-            # 시간순 정렬 (최신이 위로)
-            alert_df = pd.DataFrame(ALERT_LOG).sort_values(by='Time', ascending=False)
-            alert_df.to_csv("alert_log.csv", index=False, encoding='utf-8-sig')
-            
-    except: pass
+    # 1. 랭킹 저장 (기존 로직)
+    if stock_map:
+        sorted_stocks = sorted(stock_map.items(), key=lambda x: len(x[1]), reverse=True)
+        final_rank = []
+        final_search = []
+        for rank, (s, ctx) in enumerate(sorted_stocks, 1):
+            try:
+                info = PRICE_MAP.get(s)
+                price = info['Price'] if info else 0
+                rate = info['Change'] if info else 0.0
+                blob = " ".join(ctx)
+                kws = [t.form for t in kiwi.tokenize(blob[:1000]) if t.tag.startswith('NN') or (t.tag=='SL' and len(t.form)>2)]
+                valid_kws = []
+                for w in kws:
+                    if len(w) < 2: continue
+                    if w in STOP_KEYWORDS or w in ABSOLUTE_IGNORE or w in BLACKLIST_STOCKS: continue
+                    if re.match(r'^[a-zA-Z]+$', w) and w.upper() in [x.upper() for x in STOP_KEYWORDS]: continue
+                    valid_kws.append(w)
+                reason = ", ".join([w for w, _ in Counter(valid_kws).most_common(3)])
+                if not reason: reason = "뉴스참조"
+                news_context = " || ".join(ctx[:5]) 
+                data_row = {'Rank': rank, 'Stock': s, 'Buzz': len(ctx), 'Price': price, 'Change': rate, 'Trend': "-", 'Theme': reason, 'Context': news_context, 'Time': datetime.now().strftime('%H:%M:%S')}
+                final_search.append(data_row)
+                if rank <= 30: final_rank.append(data_row)
+            except: continue
+        try:
+            pd.DataFrame(final_rank).to_csv("market_data.csv", index=False, encoding='utf-8-sig')
+            pd.DataFrame(final_search).to_csv("search_db.csv", index=False, encoding='utf-8-sig')
+        except: pass
+
+    # 2. [핵심] 공시 누적 저장 (append mode)
+    if ALERT_HISTORY:
+        # 최신순 정렬 + 최대 300개만 유지 (용량 관리)
+        df_hist = pd.DataFrame(ALERT_HISTORY).sort_values(by='Time', ascending=False).head(300)
+        df_hist.to_csv("alert_history.csv", index=False, encoding='utf-8-sig')
 
 async def collect():
     print("\n✅ [2] 텔레그램 서버 접속 중...")
@@ -165,13 +163,13 @@ async def collect():
 
     stock_names = get_krx_map()
     if not stock_names: return
+    
+    # 시작할 때 기존 기록 불러오기
+    load_alert_history()
 
     print(f"✅ [3] 뉴스 & 공시 감시 시작...")
     kiwi = Kiwi()
     stock_map = {} 
-    
-    global ALERT_LOG
-    ALERT_LOG = [] # 리셋
     
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=3)
     
@@ -184,32 +182,30 @@ async def collect():
                     if any(bad in m.text for bad in ABSOLUTE_IGNORE): continue
                     
                     found_stocks_in_msg = []
-                    
-                    # 1. 메시지 안에 있는 모든 종목 찾기
                     for s in stock_names:
                         if s in m.text:
                             if '증권' in s or '스팩' in s or '리츠' in s: continue 
                             found_stocks_in_msg.append(s)
-                            
-                            # 일반 랭킹 집계용
                             if s not in stock_map: stock_map[s] = []
                             if m.text not in stock_map[s]: stock_map[s].append(m.text)
                     
-                    # 2. [핵심] 공시 키워드 감지 (종목 발견 즉시 검사)
-                    # 순위 상관없이 발견되면 무조건 알림 리스트에 추가
+                    # [핵심] 공시 누적 로직
                     for s in found_stocks_in_msg:
                         for keyword in ALERT_KEYWORDS:
                             if keyword in m.text:
-                                # 중복 체크 (같은 종목+같은 키워드 이미 있으면 패스)
-                                is_exist = any(x['Stock'] == s and x['Keyword'] == keyword for x in ALERT_LOG)
+                                # 날짜+시간까지 포함해서 중복 체크 (매우 중요)
+                                msg_time = m.date.strftime('%Y-%m-%d %H:%M:%S')
+                                is_exist = any(x['Stock'] == s and x['Keyword'] == keyword and x['Time'] == msg_time for x in ALERT_HISTORY)
+                                
                                 if not is_exist:
-                                    ALERT_LOG.append({
+                                    new_alert = {
+                                        'Time': msg_time,
                                         'Stock': s,
                                         'Keyword': keyword,
-                                        'Content': m.text[:100], 
-                                        'Time': m.date.strftime('%H:%M:%S')
-                                    })
-                                    print(f"🚨 [긴급] {s} : {keyword} (순위 무관 포착)")
+                                        'Content': m.text[:150] # 내용 좀 더 길게
+                                    }
+                                    ALERT_HISTORY.append(new_alert)
+                                    print(f"🚨 [누적됨] {s} : {keyword}")
         except: continue
         if (i+1) % 5 == 0: save_db(stock_map, kiwi)
 
