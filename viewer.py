@@ -5,10 +5,10 @@ import altair as alt
 import os
 from datetime import datetime
 
-# 1. 페이지 설정 (가장 먼저 실행)
+# 1. 페이지 설정 (가장 먼저!)
 st.set_page_config(page_title="HedgeFund Desk", layout="wide")
 
-# 2. 스타일 설정
+# 2. 스타일
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] { font-size: 24px; font-weight: bold; }
@@ -19,10 +19,8 @@ st.markdown("""
 st.title("⚡ 기관용 마켓 스캐너 (DART & KST)")
 
 # ==========================================
-# [핵심] 반복문 시작 '전'에 위젯 만들기 (에러 해결)
+# [핵심] 검색창과 버튼을 '반복문 밖'에 배치 (에러 원천 차단)
 # ==========================================
-
-# 사이드바: 다운로드 & 검색창
 with st.sidebar:
     st.header("📥 데이터 추출")
     if os.path.exists("alert_history.csv"):
@@ -31,22 +29,20 @@ with st.sidebar:
                 st.download_button("🚨 공시 파일 받기", f, "dart_history.csv", "text/csv")
         except: pass
     
-    # [중요] 검색창을 여기에 둡니다 (반복문 밖!)
     st.markdown("---")
-    search_keyword = st.text_input("🔍 종목 검색", key="sidebar_search_fixed")
+    # 검색창을 여기에 한 번만 만듭니다.
+    search_keyword = st.text_input("🔍 종목 검색", key="sidebar_search_final")
 
-# 탭 만들기 (반복문 밖!)
-tab1, tab2 = st.tabs(["📊 실시간 랭킹 (Main)", "🚨 DART 공시 (Link)"])
+# 탭도 밖에서 한 번만 만듭니다.
+tab1, tab2 = st.tabs(["📊 실시간 랭킹", "🚨 DART 공시 (Link)"])
 
-# 내용이 채워질 빈 공간(Placeholder) 미리 만들기
+# 내용이 들어갈 빈 공간 만들기
 tab1_placeholder = tab1.empty()
 tab2_placeholder = tab2.empty()
 
-# 팝업 알림용 상태 저장
 if 'viewed_alerts' not in st.session_state:
     st.session_state['viewed_alerts'] = set()
 
-# 데이터 로드 함수
 def load_data():
     df_rank = pd.DataFrame()
     df_search = pd.DataFrame()
@@ -68,7 +64,7 @@ def color_change(val):
     return f'color: {color}; font-weight: bold;'
 
 # ==========================================
-# [핵심] 이제 반복 시작 (데이터만 갈아끼움)
+# [반복문 시작] 데이터만 계속 갈아끼움
 # ==========================================
 while True:
     df_rank, df_search, df_history = load_data()
@@ -79,45 +75,41 @@ while True:
         for i, row in recent.iterrows():
             uid = f"{row['Stock']}_{row['Time']}"
             if uid not in st.session_state['viewed_alerts']:
-                st.toast(f"🚨 [DART] {row['Stock']} 공시!", icon="📢")
+                st.toast(f"🚨 {row['Stock']} 공시 발생!", icon="📢")
                 st.session_state['viewed_alerts'].add(uid)
 
-    # 2. 랭킹 탭 업데이트
+    # 2. 랭킹 탭 채우기
     with tab1_placeholder.container():
-        # 검색 결과 보여줄 공간
-        search_container = st.container()
-        
-        if not df_rank.empty:
-            # 검색 로직
-            target_row = None
-            if search_keyword and not df_search.empty:
-                filtered = df_search[df_search['Stock'].str.contains(search_keyword, case=False)]
-                if not filtered.empty: target_row = filtered.iloc[0]
-            
-            if target_row is not None:
-                with search_container:
-                    st.info(f"🔎 {target_row['Stock']} | {int(target_row['Price']):,}원 | {target_row['Theme']}")
+        # 검색 결과 표시용
+        if search_keyword and not df_search.empty:
+            filtered = df_search[df_search['Stock'].str.contains(search_keyword, case=False)]
+            if not filtered.empty:
+                row = filtered.iloc[0]
+                st.info(f"🔎 {row['Stock']} | {int(row['Price']):,}원 | {row['Theme']}")
 
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.subheader("📊 언급량 Top 10")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.subheader("📊 언급량 Top 10")
+            if not df_rank.empty:
                 chart = alt.Chart(df_rank.head(10)).mark_bar().encode(
                     x=alt.X('Buzz', title=None), y=alt.Y('Stock', sort='-x', title=None),
                     color=alt.Color('Buzz', legend=None)
                 ).properties(height=500)
                 st.altair_chart(chart, use_container_width=True)
-            
-            with c2:
-                st.subheader("📋 실시간 랭킹")
+        
+        with c2:
+            st.subheader("📋 실시간 랭킹")
+            if not df_rank.empty:
                 display = df_rank[['Rank', 'Stock', 'Price', 'Change', 'Buzz', 'Theme']].style.map(color_change, subset=['Change']).format({'Price':"{:,.0f}", 'Change':"{:+.2f}%"})
                 st.dataframe(display, use_container_width=True, height=500, hide_index=True)
-        else:
-            st.warning("데이터 수집 대기 중...")
+            else:
+                st.warning("데이터 수집 대기 중...")
 
-    # 3. DART 탭 업데이트 (링크 기능)
+    # 3. DART 탭 채우기 (링크 기능 포함)
     with tab2_placeholder.container():
         st.subheader("🚨 DART 실시간 공시")
         if not df_history.empty:
+            # 링크 컬럼 설정
             st.data_editor(
                 df_history[['Time', 'Stock', 'Content', 'Link']],
                 use_container_width=True, height=800, hide_index=True,
@@ -132,6 +124,6 @@ while True:
                 disabled=True
             )
         else:
-            st.info("아직 DART 공시가 없습니다.")
+            st.info("아직 공시가 없습니다. (수집기는 작동 중)")
 
     time.sleep(1)
