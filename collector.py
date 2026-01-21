@@ -10,7 +10,6 @@ from kiwipiepy import Kiwi
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-# 한국 시간
 KST = timezone(timedelta(hours=9))
 
 config = configparser.ConfigParser()
@@ -24,9 +23,10 @@ except:
     API_HASH = '36f413dbaa03648679d3a3db53d0cf76'
 
 SESSION_NAME = 'streamlit_session'
-print("✅ [1] Awake(darthacking) 전용 수집기 (디버깅 모드)")
+print("✅ [1] 시스템 가동 (생중계 모드)")
 
-TARGET_CHANNELS = ['darthacking']
+# 선생님이 주신 아이디
+TARGET_CHANNELS = ['darthacking'] 
 
 ALERT_KEYWORDS = ['잠정실적', '영업이익', '매출액', '유상증자', '무상증자', '합병', '분할', '공개매수', '공급계약', '수주', '임상', '승인', '체결', '특허', '무상', '배당', '자사주', 'MOU', '협력', '속보', '특징주', '공시']
 
@@ -51,15 +51,12 @@ def load_alert_history():
 
 def get_krx_map():
     global PRICE_MAP
-    print("⏳ KRX 다운로드 시도...")
     try:
-        # [수정] 에러가 나면 무슨 에러인지 출력하도록 변경
         df_krx = fdr.StockListing('KRX')
         for idx, row in df_krx.iterrows():
             name = row['Name']
             if name in NOISE_STOCKS or name in BLACKLIST_STOCKS: continue
             if '스팩' in name or '리츠' in name or '우B' in name: continue
-            
             price = row['Close'] if 'Close' in row else 0
             change = 0.0
             for col in ['ChagesRatio', 'ChangesRatio', 'Change']:
@@ -70,7 +67,7 @@ def get_krx_map():
         print(f"✅ KRX 다운로드 성공! ({len(PRICE_MAP)}개)")
         return set(PRICE_MAP.keys())
     except Exception as e:
-        print(f"⚠️ [치명적 에러] KRX 다운로드 실패: {e}") # 에러 메시지를 보여줌
+        print(f"⚠️ KRX 다운로드 실패: {e}")
         return set()
 
 def save_db(stock_map, kiwi):
@@ -97,7 +94,6 @@ def save_db(stock_map, kiwi):
                 reason = ", ".join([w for w, _ in Counter(valid_kws).most_common(3)])
                 if not reason: reason = "뉴스참조"
                 news_context = " || ".join(ctx[:5]) 
-                
                 data_row = {'Rank': rank, 'Stock': s, 'Buzz': len(ctx), 'Price': price, 'Change': rate, 'Trend': "-", 'Theme': reason, 'Context': news_context, 'Time': now_kst}
                 final_search.append(data_row)
                 if rank <= 30: final_rank.append(data_row)
@@ -119,25 +115,26 @@ async def collect():
     if not await client.is_user_authorized(): return
 
     stock_names = get_krx_map()
-    if not stock_names: 
-        print("❌ 종목 리스트가 비어서 중단합니다.")
-        return
-    
+    if not stock_names: return
     load_alert_history()
     kiwi = Kiwi()
     stock_map = {} 
     
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=3)
     
-    print(f"✅ [3] 감시 시작 (Awake / KST)")
     for i, ch in enumerate(TARGET_CHANNELS):
+        print(f"👉 [진입 시도] 채널: {ch}") # [수정] 진입 확인
         try:
             ent = await client.get_entity(ch)
-            async for m in client.iter_messages(ent, limit=100):
-                if m.text and len(m.text) > 2:
-                    if m.date and m.date < cutoff_date: break 
-                    if any(bad in m.text for bad in ABSOLUTE_IGNORE): continue
-                    
+            print(f"   🔓 {ch} 접속 성공! 메시지 읽는 중...") # [수정] 접속 성공 확인
+            
+            msg_count = 0
+            async for m in client.iter_messages(ent, limit=10): # [수정] 일단 10개만 테스트로 읽어봄
+                if m.text:
+                    msg_count += 1
+                    # [핵심] 봇이 읽고 있는 실제 메시지를 화면에 뿌림
+                    print(f"   📩 [읽음] {m.text[:30].replace('\n', ' ')}...") 
+
                     msg_time_kst = m.date.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
                     found_stocks_in_msg = []
                     for s in stock_names:
@@ -154,8 +151,14 @@ async def collect():
                                 if not is_exist:
                                     new_alert = {'Time': msg_time_kst, 'Stock': s, 'Keyword': keyword, 'Content': m.text[:150]}
                                     ALERT_HISTORY.append(new_alert)
-                                    print(f"🚨 [Awake] {s}:{keyword} ({msg_time_kst})")
-        except: continue
+                                    print(f"🚨 [발견!] {s}:{keyword}")
+            
+            if msg_count == 0:
+                print(f"   ⚠️ 경고: {ch} 채널에 글이 하나도 없습니다! (혹시 아이디 틀림?)")
+                
+        except Exception as e: 
+            print(f"   ❌ 접속 실패 ({ch}): {e}") # [수정] 접속 실패 시 에러 출력
+            continue
         save_db(stock_map, kiwi)
 
     save_db(stock_map, kiwi)
